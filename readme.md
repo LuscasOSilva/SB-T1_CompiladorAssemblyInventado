@@ -1,6 +1,16 @@
 # Compilador Assembly inventado
 Primeiro trabalho Software Básico
 
+# Grupo:
+Lucas de Oliveira Silva
+200022857
+
+Mirella Gomes Silva Nascimento
+202033525
+
+Nicole de Oliveira Sena
+190114860
+
 # Como rodar
 Clone o repositorio usando o comando
 ```bash
@@ -14,7 +24,7 @@ g++ main.cpp -o main
 ```
 "teste.txt" será o nome do arquivo assembly inventado
 ```bash
-./main teste.txt
+./main teste.asm
 ```
 
 # Windows
@@ -22,7 +32,11 @@ g++ main.cpp -o main
 ```bash
 g++ main.cpp -o main.exe
 ```
-"teste.txt" será o nome do arquivo assembly inventado
+"teste.asm" será o nome do arquivo assembly inventado
 ```bash
-main.exe teste.txt
+main.exe teste.asm
+```
+## No vscode
+```bash
+& .\'main.exe' teste.asm
 ```

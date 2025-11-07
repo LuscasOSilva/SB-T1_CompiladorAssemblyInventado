@@ -1,0 +1,10 @@
+# 1. Ignora tudo (todos os arquivos e pastas) por padrão
+*
+
+# 2. Abre exceções (NÃO ignore) para os arquivos específicos
+!main.cpp
+!readme.md
+!TRABALHO 1.docx
+
+# 3. Não ignore o próprio .gitignore
+!.gitignore
