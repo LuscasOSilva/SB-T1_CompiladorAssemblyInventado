@@ -2,32 +2,53 @@
 
 using namespace std;
 
-// --- ESTRUTURAS DE DADOS PRINCIPAIS ---
+// =========================================================================
+// ESTRUTURAS GLOBAIS (Usadas nas duas fases)
+// =========================================================================
 
 // Tabela de Opcodes (Instrução -> {Opcode, Tamanho em palavras})
 map<string, pair<int, int>> TabelaOpcodes;
 
-// Tabela de Símbolos (Rótulo -> Endereço)
-map<string, int> TabelaSimbolos;
-
-// Guardar uma pendência
-struct Pendencia {
-    int enderecoNoCodigo; // Onde o '0' está (o índice no vetor CodigoObjeto)
-    int deslocamento;     // O valor a somar (ex: o '1' em 'NUM+1')
+// --- ESTRUTURAS DA FASE 1 (PRÉ-PROCESSAMENTO) ---
+struct Macro {
+    string nome;
+    vector<string> args;
+    vector<string> corpo; // Vetor de linhas
 };
+map<string, Macro> TabelaMacros; // Nossa MNT (Tabela de Nomes de Macros)
 
-// A nova Lista de Pendências
-map<string, vector<Pendencia>> ListaPendencias;
+// --- ESTRUTURAS DA FASE 2 (COMPILAÇÃO) ---
+map<string, int> TabelaSimbolos; // Tabela de Símbolos (Rótulo -> Endereço)
+struct Pendencia {
+    int enderecoNoCodigo; // Onde o '0' está
+    int deslocamento;     // O '1' em 'NUM+1'
+};
+map<string, vector<Pendencia>> ListaPendencias; // Lista de Pendências
+vector<int> CodigoObjeto; // Vetor para .o1 e .o2
 
-// Código objeto final que será escrito nos arquivos
-vector<int> CodigoObjeto;
 
-// --- FUNÇÕES AUXILIARES ---
+// =========================================================================
+// FUNÇÕES AUXILIARES GERAIS
+// =========================================================================
 
 // Converte uma string para maiúsculas
 string paraMaiusculo(string s) {
     transform(s.begin(), s.end(), s.begin(), ::toupper);
     return s;
+}
+
+// Verifica se um rótulo é válido
+bool rotuloValido(const string& label) {
+    if (label.empty()) return false;
+    if (isdigit(label[0])) {
+        return false; // Não pode começar com número
+    }
+    for (char c : label) {
+        if (!isalnum(c) && c != '_') {
+            return false; // Só pode ter alfanuméricos e _
+        }
+    }
+    return true;
 }
 
 // Preenche a Tabela de Opcodes com base na imagem
@@ -48,307 +69,424 @@ void setupTabelaOpcodes() {
     TabelaOpcodes["STOP"]   = {14, 1};
 }
 
-// Verifica se um rótulo é válido
-bool rotuloValido(const string& label) {
-    if (isdigit(label[0])) {
-        return false; // Não pode começar com número
-    }
-    for (char c : label) {
-        if (!isalnum(c) && c != '_') {
-            return false; // Só pode ter alfanuméricos e _
+
+// =========================================================================
+// FASE 1: LÓGICA DO PRÉ-PROCESSADOR (.ASM -> .PRE)
+// =========================================================================
+
+// Esta função expande uma macro e lida com a substituição de argumentos
+vector<string> expandirMacro(Macro& macro, vector<string>& argsRecebidos) {
+    vector<string> linhasExpandidas;
+
+    for (string linhaCorpo : macro.corpo) {
+        // Para cada linha no corpo da macro, substitui os argumentos
+        for (size_t i = 0; i < macro.args.size(); ++i) {
+            size_t pos = 0;
+            // Usa find e replace para substituir &ARG por ARG_RECEBIDO
+            while ((pos = linhaCorpo.find(macro.args[i], pos)) != string::npos) {
+                linhaCorpo.replace(pos, macro.args[i].length(), argsRecebidos[i]);
+                pos += argsRecebidos[i].length();
+            }
         }
+        linhasExpandidas.push_back(linhaCorpo);
     }
-    return true;
+    return linhasExpandidas;
 }
 
-/**
- * Processa um token de operando (ex: "VAR" ou "VAR+1"),
- * resolve o endereço se possível, ou adiciona na ListaPendencias.
- */
-void processarOperando(const string& tokenOperando, int& LC) {
-    string rotuloBase = paraMaiusculo(tokenOperando);
-    int deslocamento = 0;
-
-    // Tenta encontrar o '+' para o deslocamento
-    size_t posSoma = tokenOperando.find('+');
-    
-    if (posSoma != string::npos) {
-        // Encontrou um '+', divide o token
-        rotuloBase = paraMaiusculo(tokenOperando.substr(0, posSoma));
-        
-        try {
-            deslocamento = stoi(tokenOperando.substr(posSoma + 1));
-        } catch (...) {
-            // Ex: "NUM+ABC" -> Erro
-            cerr << "Erro Sintático: Deslocamento inválido em '" << tokenOperando << "'" << endl;
-        }
-    }
-
-    if (!rotuloValido(rotuloBase)) {
-         cerr << "Erro Léxico: Rótulo '" << rotuloBase << "' inválido no operando." << endl;
-    }
-
-    // Agora, usar 'rotuloBase' e 'deslocamento'
-    if (TabelaSimbolos.count(rotuloBase)) {
-        // Símbolo JÁ conhecido (passado)
-        // Resolve o endereço imediatamente
-        CodigoObjeto.push_back(TabelaSimbolos[rotuloBase] + deslocamento);
-    } else {
-        // Símbolo AINDA NÃO conhecido (futuro)
-        // Adiciona placeholder 0 para o .o1
-        CodigoObjeto.push_back(0); 
-        // Adiciona na lista de pendências (com o deslocamento) para o .o2
-        ListaPendencias[rotuloBase].push_back({(int)CodigoObjeto.size() - 1, deslocamento}); 
-    }
-    
-    // O operando ocupa 1 palavra no código objeto
-    LC++;
-}
-
-// --- FUNÇÃO PRINCIPAL DE PROCESSAMENTO ---
-
-int main(int argc, char *argv[]) {
-    // 1. Verificação de Argumentos e Arquivos
-    if (argc < 2) {
-        cerr << "Erro: é preciso um arquivo de entrada." << endl;
-        cerr << "Uso: ./compilador arquivo.asm" << endl;
-        return 1;
-    }
-
-    string nomeArquivoAsm = argv[1];
-    // Pega o nome base do arquivo (ex: "arquivo")
-    string nomeBase = nomeArquivoAsm.substr(0, nomeArquivoAsm.find_last_of('.'));
-    
-    ifstream arquivo(nomeArquivoAsm);
+// ### FUNÇÃO CORRIGIDA ###
+bool executar_preprocessamento(string arqEntrada, string arqSaida) {
+    ifstream arquivo(arqEntrada);
     if (!arquivo.is_open()) {
-        cerr << "Erro: Não foi possível abrir o arquivo de entrada: " << nomeArquivoAsm << endl;
-        return 1;
+        cerr << "Erro FASE 1: Não foi possível abrir o arquivo .asm: " << arqEntrada << endl;
+        return false;
+    }
+    
+    ofstream arquivo_pre(arqSaida);
+    if (!arquivo_pre.is_open()) {
+        cerr << "Erro FASE 1: Não foi possível criar o arquivo .pre: " << arqSaida << endl;
+        return false;
     }
 
-    // Abre o arquivo de saída .o1
-    ofstream arquivo_o1(nomeBase + ".o1");
-    if (!arquivo_o1.is_open()) {
-        cerr << "Erro: Não foi possível criar o arquivo de saída .o1" << endl;
-        return 1;
-    }
-
-    // --- NOVO ---
-    // Abre o arquivo de saída .o2
-    ofstream arquivo_o2(nomeBase + ".o2");
-    if (!arquivo_o2.is_open()) {
-        cerr << "Erro: Não foi possível criar o arquivo de saída .o2" << endl;
-        return 1;
-    }
-    // --- NOVO ---
-
-    // 2. Inicialização
-    setupTabelaOpcodes();
-    int LC = 0; // Location Counter (Contador de Posição)
-    int contadorLinha = 0;
-    string ultimoLabel = ""; // Para tratar "ROT:\n ADD N1" 
-
+    list<string> linhasParaProcessar;
     string linha;
-
-    // 3. ALGORITMO DE PASSAGEM ÚNICA
+    
     while (getline(arquivo, linha)) {
-        contadorLinha++;
-        stringstream ss(linha); // Para "quebrar" a linha em palavras
+        linhasParaProcessar.push_back(linha);
+    }
+    arquivo.close();
+
+    while (!linhasParaProcessar.empty()) {
+        linha = linhasParaProcessar.front();
+        linhasParaProcessar.pop_front();
+
+        size_t posComentario = linha.find(';');
+        if (posComentario != string::npos) {
+            linha = linha.substr(0, posComentario);
+        }
+
+        stringstream ss(linha);
         string token;
         vector<string> tokens;
-
-        // Transforma a linha em um vetor de tokens (palavras)
-        // Isso ignora automaticamente espaços e tabs desnecessários 
         while (ss >> token) {
             tokens.push_back(token);
         }
 
         if (tokens.empty()) {
-            continue; // Ignora linha em branco
+            arquivo_pre << endl;
+            continue; 
         }
 
-        // --- INÍCIO DA LÓGICA DE PARSING ---
+        int tokenOffset = 0;
+        if (tokens[0].back() == ':') {
+            tokenOffset = 1;
+        }
 
+        if (tokenOffset >= tokens.size()) {
+            arquivo_pre << linha << endl;
+            continue;
+        }
+
+        string instrucao = paraMaiusculo(tokens[tokenOffset]);
+
+        // --- Lógica de Definição de Macro ---
+        if (instrucao == "MACRO") {
+            Macro novaMacro;
+            string macroName;
+            int argStartIndex;
+
+            // ***** CORREÇÃO AQUI *****
+            if (tokenOffset == 1) { // Macro tem rótulo (ex: "RES: MACRO ...")
+                macroName = paraMaiusculo(tokens[0].substr(0, tokens[0].length() - 1)); // "RES"
+                argStartIndex = tokenOffset + 1; // Args começam no token 2 (ex: &N1)
+            } else { // Sem rótulo (ex: "MACRO SWAP ...")
+                macroName = paraMaiusculo(tokens[1]); // "SWAP"
+                argStartIndex = tokenOffset + 2; // Args começam no token 2 (ex: &A)
+            }
+            // *******************************
+
+            novaMacro.nome = macroName;
+            
+            for (size_t i = argStartIndex; i < tokens.size(); ++i) {
+                novaMacro.args.push_back(tokens[i]);
+            }
+
+            string linhaCorpo;
+            while (true) {
+                if (linhasParaProcessar.empty()) {
+                    cerr << "Erro FASE 1: Fim de arquivo inesperado. Macro '" << novaMacro.nome << "' não foi fechada com ENDMACRO." << endl;
+                    return false;
+                }
+                linhaCorpo = linhasParaProcessar.front();
+                linhasParaProcessar.pop_front();
+                
+                stringstream ssCorpo(linhaCorpo);
+                string tokenCorpo;
+                ssCorpo >> tokenCorpo;
+                if (paraMaiusculo(tokenCorpo) == "ENDMACRO") {
+                    break;
+                }
+                novaMacro.corpo.push_back(linhaCorpo);
+            }
+            TabelaMacros[novaMacro.nome] = novaMacro;
+            continue; 
+        }
+
+        // --- Lógica de Expansão de Macro ---
+        if (TabelaMacros.count(instrucao)) {
+            // É uma chamada de macro!
+            Macro macro = TabelaMacros[instrucao];
+            vector<string> argsRecebidos;
+            for (size_t i = tokenOffset + 1; i < tokens.size(); ++i) {
+                argsRecebidos.push_back(tokens[i]);
+            }
+
+            if (argsRecebidos.size() > 2) { //
+                cout << "Aviso FASE 1: Macro '" << instrucao << "' chamada com mais de 2 argumentos." << endl;
+            }
+
+            vector<string> linhasExpandidas = expandirMacro(macro, argsRecebidos);
+
+            // Adiciona as linhas expandidas NO COMEÇO da lista (para macros aninhadas)
+            linhasParaProcessar.insert(linhasParaProcessar.begin(), linhasExpandidas.begin(), linhasExpandidas.end());
+
+            // Se a linha original tinha um rótulo, preserva ele
+            if (tokenOffset == 1) {
+                string rotulo = tokens[0];
+                if (!linhasParaProcessar.empty()) {
+                    linhasParaProcessar.front() = rotulo + " " + linhasParaProcessar.front();
+                } else {
+                    // Macro vazia, apenas escreve o rótulo
+                    arquivo_pre << rotulo << endl;
+                }
+            }
+            continue;
+        }
+
+        // Se não for definição nem chamada de macro, escreve a linha no .pre
+        arquivo_pre << linha << endl;
+    }
+
+    cout << "FASE 1: Pré-processamento concluído -> " << arqSaida << endl;
+    arquivo_pre.close();
+    return true;
+}
+
+
+// =========================================================================
+// FASE 2: LÓGICA DO COMPILADOR (.PRE -> .O1, .O2)
+// (Função 'main' anterior, agora chamada pela 'main' real)
+// =========================================================================
+
+bool executar_passagem_unica(string arqEntrada, string arqSaidaO1, string arqSaidaO2, int& contadorLinhaPre) {
+    
+    ifstream arquivo(arqEntrada);
+    if (!arquivo.is_open()) {
+        cerr << "Erro FASE 2: Não foi possível abrir o arquivo .pre: " << arqEntrada << endl;
+        return false;
+    }
+
+    ofstream arquivo_o1(arqSaidaO1);
+    if (!arquivo_o1.is_open()) {
+        cerr << "Erro FASE 2: Não foi possível criar o arquivo de saída .o1" << endl;
+        return false;
+    }
+
+    ofstream arquivo_o2(arqSaidaO2);
+    if (!arquivo_o2.is_open()) {
+        cerr << "Erro FASE 2: Não foi possível criar o arquivo de saída .o2" << endl;
+        return false;
+    }
+
+    int LC = 0; // Location Counter
+    string ultimoLabel = "";
+    string linha;
+
+    // 3. ALGORITMO DE PASSAGEM ÚNICA
+    while (getline(arquivo, linha)) {
+        contadorLinhaPre++; // Incrementa o contador de linhas do .pre
+        
+        size_t posComentario = linha.find(';');
+        if (posComentario != string::npos) {
+            linha = linha.substr(0, posComentario);
+        }
+
+        stringstream ss(linha);
+        string token;
+        vector<string> tokens;
+
+        while (ss >> token) {
+            tokens.push_back(token);
+        }
+
+        if (tokens.empty()) {
+            continue;
+        }
+
+        // --- LÓGICA DE PARSING (Idêntica ao seu main.cpp) ---
         string label = "";
-        int tokenOffset = 0; // Quantos tokens "pular" (ex: o rótulo)
+        int tokenOffset = 0; 
 
-        // 3.1. Verifica se o primeiro token é um Rótulo
         if (tokens[0].back() == ':') {
             label = paraMaiusculo(tokens[0].substr(0, tokens[0].length() - 1));
             tokenOffset = 1;
 
             if (!rotuloValido(label)) {
-                // Erro Léxico
-                cerr << "Erro Léxico (linha " << contadorLinha << "): Rótulo '" << label << "' inválido." << endl;
+                cerr << "Erro Léxico (linha .pre " << contadorLinhaPre << "): Rótulo '" << label << "' inválido." << endl; //
             }
             if (tokens.size() > 1 && tokens[1].back() == ':') {
-                // Erro Sintático
-                cerr << "Erro Sintático (linha " << contadorLinha << "): Dois rótulos na mesma linha." << endl;
+                cerr << "Erro Sintático (linha .pre " << contadorLinhaPre << "): Dois rótulos na mesma linha." << endl; //
             }
         }
 
-        // 3.2. Trata Rótulos
-        // Havia um rótulo na linha anterior? 
         if (!ultimoLabel.empty()) {
             if (!label.empty()) {
-                // Ex: ROT1: \n ROT2: ... -> Erro, dois rótulos para a mesma instrução?
-                cerr << "Erro Semântico (linha " << contadorLinha << "): Rótulo '" << label << "' segue rótulo da linha anterior '" << ultimoLabel << "'." << endl;
+                cerr << "Erro Semântico (linha .pre " << contadorLinhaPre << "): Rótulo '" << label << "' segue rótulo da linha anterior '" << ultimoLabel << "'." << endl;
             }
-            
             if (TabelaSimbolos.count(ultimoLabel)) {
-                // Erro Semântico
-                cerr << "Erro Semântico (linha " << contadorLinha-1 << "): Rótulo '" << ultimoLabel << "' declarado duas vezes." << endl;
+                cerr << "Erro Semântico (linha .pre " << contadorLinhaPre-1 << "): Rótulo '" << ultimoLabel << "' declarado duas vezes." << endl; //
             } else {
                 TabelaSimbolos[ultimoLabel] = LC;
-                // NOTA: Aqui ocorreria a resolução de pendências para o .o2
-                // ResolverPendencias(ultimoLabel, LC); 
             }
-            ultimoLabel = ""; // Consome o rótulo
+            ultimoLabel = "";
         }
 
-        // Esta linha continha um rótulo?
         if (!label.empty()) {
-            if (tokens.size() == 1) { // Linha SÓ tinha o rótulo
+            if (tokens.size() == 1) { 
                 ultimoLabel = label;
-                continue; // Vai para a próxima linha
-            } else { // Rótulo E instrução na mesma linha
+                continue; 
+            } else {
                 if (TabelaSimbolos.count(label)) {
-                    // Erro Semântico
-                    cerr << "Erro Semântico (linha " << contadorLinha << "): Rótulo '" << label << "' declarado duas vezes." << endl;
+                    cerr << "Erro Semântico (linha .pre " << contadorLinhaPre << "): Rótulo '" << label << "' declarado duas vezes." << endl; //
                 } else {
                     TabelaSimbolos[label] = LC;
-                    // NOTA: Aqui ocorreria a resolução de pendências para o .o2
-                    // ResolverPendencias(label, LC);
                 }
             }
         }
 
-        // Se não há mais tokens, a linha era só um label (ou vazia)
         if (tokenOffset >= tokens.size()) {
             continue;
         }
 
-        // 3.3. Trata Instruções e Diretivas
         string instrucao = paraMaiusculo(tokens[tokenOffset]);
 
         if (TabelaOpcodes.count(instrucao)) {
-            // É uma INSTRUÇÃO
             int opcode = TabelaOpcodes[instrucao].first;
             int tamanho = TabelaOpcodes[instrucao].second;
             int numOperandos = tamanho - 1;
 
             if (tokens.size() - tokenOffset - 1 != numOperandos) {
-                // Erro Semântico
-                cerr << "Erro Semântico (linha " << contadorLinha << "): Instrução '" << instrucao << "' espera " << numOperandos << " operandos, mas recebeu " << (tokens.size() - tokenOffset - 1) << "." << endl;
+                cerr << "Erro Semântico (linha .pre " << contadorLinhaPre << "): Instrução '" << instrucao << "' espera " << numOperandos << " operandos, mas recebeu " << (tokens.size() - tokenOffset - 1) << "." << endl; //
                 continue;
             }
 
             CodigoObjeto.push_back(opcode);
             LC++;
 
-            // Processa os operandos
             for (int i = 0; i < numOperandos; i++) {
                 string operando = tokens[tokenOffset + 1 + i];
-                // Chama a nova função de processamento
-                processarOperando(operando, LC); 
+                // Processa "LABEL+N"
+                string rotuloBase = paraMaiusculo(operando);
+                int deslocamento = 0;
+                size_t posSoma = operando.find('+');
+                
+                if (posSoma != string::npos) {
+                    rotuloBase = paraMaiusculo(operando.substr(0, posSoma));
+                    try {
+                        string strDeslocamento = operando.substr(posSoma + 1);
+                        if(strDeslocamento.empty()) {
+                             cerr << "Erro Sintático (linha .pre " << contadorLinhaPre << "): Deslocamento vazio em '" << operando << "'" << endl;
+                        } else {
+                            deslocamento = stoi(strDeslocamento);
+                        }
+                    } catch (...) {
+                         cerr << "Erro Sintático (linha .pre " << contadorLinhaPre << "): Deslocamento inválido em '" << operando << "'" << endl;
+                    }
+                }
+
+                if (!rotuloValido(rotuloBase)) {
+                    cerr << "Erro Léxico (linha .pre " << contadorLinhaPre << "): Rótulo '" << rotuloBase << "' inválido no operando." << endl;
+                }
+
+                if (TabelaSimbolos.count(rotuloBase)) {
+                    CodigoObjeto.push_back(TabelaSimbolos[rotuloBase] + deslocamento);
+                } else {
+                    CodigoObjeto.push_back(0); // Placeholder para .o1
+                    ListaPendencias[rotuloBase].push_back({LC, deslocamento}); 
+                }
+                LC++;
             }
 
         } else if (instrucao == "SPACE") {
-            // É uma DIRETIVA
-            int numPalavras = 1; // Padrão
+            int numPalavras = 1; 
             if (tokens.size() - tokenOffset - 1 > 0) {
-                // `SPACE` pode ter argumento
                 try {
                     numPalavras = stoi(tokens[tokenOffset + 1]);
                 } catch (...) {
-                    cerr << "Erro Sintático (linha " << contadorLinha << "): Operando de SPACE deve ser um número." << endl;
+                    cerr << "Erro Sintático (linha .pre " << contadorLinhaPre << "): Operando de SPACE deve ser um número." << endl;
                 }
             }
-            
             for(int i = 0; i < numPalavras; i++) {
-                CodigoObjeto.push_back(0);
+                CodigoObjeto.push_back(0); //
                 LC++;
             }
 
         } else if (instrucao == "CONST") {
-            // É uma DIRETIVA
             if (tokens.size() - tokenOffset - 1 != 1) {
-                cerr << "Erro Semântico (linha " << contadorLinha << "): CONST espera 1 operando." << endl;
+                cerr << "Erro Semântico (linha .pre " << contadorLinhaPre << "): CONST espera 1 operando." << endl;
                 continue;
             }
-            
             try {
                 int valor = stoi(tokens[tokenOffset + 1]);
                 CodigoObjeto.push_back(valor);
                 LC++;
             } catch (...) {
-                cerr << "Erro Sintático (linha " << contadorLinha << "): Operando de CONST deve ser um número." << endl;
+                cerr << "Erro Sintático (linha .pre " << contadorLinhaPre << "): Operando de CONST deve ser um número." << endl;
             }
             
         } else {
-            // Erro Sintático
-            cerr << "Erro Sintático (linha " << contadorLinha << "): Instrução '" << instrucao << "' inexistente." << endl;
+            // Ignora diretivas de pré-processador que possam ter sobrado
+            if (instrucao != "MACRO" && instrucao != "ENDMACRO") {
+                 cerr << "Erro Sintático (linha .pre " << contadorLinhaPre << "): Instrução '" << instrucao << "' inexistente." << endl; //
+            }
         }
     }
-// 4. VERIFICAÇÃO FINAL (Pós-Passagem)
+    arquivo.close();
+
+    // 4. VERIFICAÇÃO FINAL E GERAÇÃO DE SAÍDA
     bool encontrouErroPendente = false;
     for (auto const& [rotulo, listaDePendencias] : ListaPendencias) {
         if (!TabelaSimbolos.count(rotulo)) {
-            // Erro Semântico: Rotulo não declarado
             encontrouErroPendente = true;
             for(const Pendencia& p : listaDePendencias) {
-                cerr << "Erro Semântico: Rótulo '" << rotulo << "' não foi declarado (usado no endereço " << p.enderecoNoCodigo << ")." << endl;
+                cerr << "Erro Semântico: Rótulo '" << rotulo << "' não foi declarado (usado no endereço .o1 " << p.enderecoNoCodigo << ")." << endl; //
             }
         }
     }
 
     // 5. GERAÇÃO DO ARQUIVO .o1
-    // A saída .o1 é o código objeto ANTES de corrigir as pendências
-    // em uma única linha, com espaços
     for (size_t i = 0; i < CodigoObjeto.size(); ++i) {
         arquivo_o1 << CodigoObjeto[i] << (i == CodigoObjeto.size() - 1 ? "" : " ");
     }
-    arquivo_o1 << endl; 
+    arquivo_o1.close();
+    cout << "FASE 2: Arquivo .o1 gerado com sucesso!" << endl;
 
-    cout << "Arquivo .o1 gerado com sucesso!" << endl;
-
-    // --- NOVO ---
     // 6. GERAÇÃO DO ARQUIVO .o2
-    // A saída .o2 é o código objeto APÓS corrigir as pendências
     if (encontrouErroPendente) {
-        cout << "Erros semânticos (Rótulo não declarado) encontrados. O arquivo .o2 não será gerado corretamente." << endl;
+        cout << "Aviso FASE 2: Erros semânticos encontrados. O arquivo .o2 pode estar incorreto." << endl;
     }
 
-    // Cria uma cópia do código para corrigir
     vector<int> CodigoObjetoCorrigido = CodigoObjeto;
-
-    // Itera sobre a Lista de Pendências para corrigir o código
     for (auto const& [rotulo, listaDePendencias] : ListaPendencias) {
         if (TabelaSimbolos.count(rotulo)) {
-            // Se o rótulo foi encontrado na Tabela de Símbolos
             int enderecoCorreto = TabelaSimbolos[rotulo];
-            
             for (const Pendencia& p : listaDePendencias) {
-                // Aplica a correção: Endereço do Rótulo + Deslocamento
                 CodigoObjetoCorrigido[p.enderecoNoCodigo] = enderecoCorreto + p.deslocamento;
             }
         }
-        // Se o rótulo não foi encontrado, o '0' (ou o que quer que estivesse lá)
-        // permanece, pois o erro já foi reportado.
     }
 
-    // Escreve o vetor CORRIGIDO no arquivo .o2
     for (size_t i = 0; i < CodigoObjetoCorrigido.size(); ++i) {
         arquivo_o2 << CodigoObjetoCorrigido[i] << (i == CodigoObjetoCorrigido.size() - 1 ? "" : " ");
     }
-    arquivo_o2 << endl;
-    
-    cout << "Arquivo .o2 gerado com sucesso!" << endl;
-    // --- FIM NOVO ---
+    arquivo_o2.close();
+    cout << "FASE 2: Arquivo .o2 gerado com sucesso!" << endl;
 
-    // 7. Limpeza
-    arquivo.close();
-    arquivo_o1.close();
-    arquivo_o2.close(); // --- NOVO ---
+    return true;
+}
+
+
+// =========================================================================
+// FUNÇÃO MAIN (CONTROLADOR)
+// =========================================================================
+
+int main(int argc, char *argv[]) {
+    // 1. Setup
+    if (argc < 2) {
+        cerr << "Uso: ./compilador arquivo.asm" << endl; //
+        return 1;
+    }
+    setupTabelaOpcodes(); // Preenche a tabela de opcodes
+
+    string nomeArquivoAsm = argv[1];
+    string nomeBase = nomeArquivoAsm.substr(0, nomeArquivoAsm.find_last_of('.'));
+    
+    string arqPre = nomeBase + ".pre";
+    string arqO1 = nomeBase + ".o1";
+    string arqO2 = nomeBase + ".o2";
+
+    // --- EXECUÇÃO EM CADEIA ---
+
+    // 2. Chama a FASE 1 (Pré-processamento)
+    bool pre_ok = executar_preprocessamento(nomeArquivoAsm, arqPre);
+
+    // 3. Se a Fase 1 deu certo, chama a FASE 2 (Compilação)
+    if (pre_ok) {
+        int contadorLinhaPre = 0; // Para reportar erros na linha correta do .pre
+        executar_passagem_unica(arqPre, arqO1, arqO2, contadorLinhaPre);
+    } else {
+        cerr << "Erro: Falha no pré-processamento. Compilação abortada." << endl;
+        return 1;
+    }
 
     return 0;
 }

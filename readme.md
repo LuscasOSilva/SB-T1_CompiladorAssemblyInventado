@@ -1,7 +1,7 @@
 # Compilador Assembly inventado
 Primeiro trabalho Software Básico
 
-# Grupo:
+## Grupo:
 Lucas de Oliveira Silva
 200022857
 
@@ -11,14 +11,14 @@ Mirella Gomes Silva Nascimento
 Nicole de Oliveira Sena
 190114860
 
-# Como rodar
+## Como rodar
 Clone o repositorio usando o comando
 ```bash
 git https://github.com/LuscasOSilva/Agenda_presidencial.git
 ```
 
 Execute os códigos
-# Linux
+## Linux
 ```bash
 g++ main.cpp -o main
 ```
@@ -27,7 +27,7 @@ g++ main.cpp -o main
 ./main teste.asm
 ```
 
-# Windows
+## Windows
 
 ```bash
 g++ main.cpp -o main.exe
@@ -36,7 +36,7 @@ g++ main.cpp -o main.exe
 ```bash
 main.exe teste.asm
 ```
-## No vscode
+### No vscode
 ```bash
 & .\'main.exe' teste.asm
 ```
