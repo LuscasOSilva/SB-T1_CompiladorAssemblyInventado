@@ -14,7 +14,7 @@ Nicole de Oliveira Sena
 ## Como rodar
 Clone o repositorio usando o comando
 ```bash
-git https://github.com/LuscasOSilva/Agenda_presidencial.git
+git https://github.com/LuscasOSilva/SB-T1_CompiladorAssemblyInventado.git
 ```
 
 Execute os códigos
